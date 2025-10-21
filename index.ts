@@ -1,32 +1,42 @@
-import express from "express";
-import { Request, Response } from "express";
-import {PrismaClient} from "@prisma/client"
+import express, { Request, Response, NextFunction } from "express";
+import cors from "cors";
+import { PrismaClient } from "@prisma/client";
+import { connectRedis } from "./utils/redisClient";
+import { redisCache } from "./middleware/redisMiddleware";
 
+// Initialize Express and Prisma
 const app = express();
 const prisma = new PrismaClient();
+
+app.use(cors({ origin: "*" }));
 app.use(express.json());
 
 
-// create user
+// ------------------- TYPES -------------------
 interface CreateUserBody {
   email: string;
   name?: string;
-  title : string;
-description: string;
-posterId : number
 }
 
-// create user
+interface CreateJobBody {
+  title: string;
+  description: string;
+  posterId: number;
+}
+
+
+
+// ------------------- USER ROUTES -------------------
 const createUser = async (req: Request<{}, {}, CreateUserBody>, res: Response) => {
   try {
-    const { email, name } = req.body; // ✅ now TypeScript knows email exists
+    const { email, name } = req.body;
 
     if (!email) {
       return res.status(400).json({ error: "Email is required" });
     }
 
     const newUser = await prisma.user.create({
-      data: { email,  name: name ?? null,},
+      data: { email, name: name ?? null },
     });
 
     return res.status(201).json(newUser);
@@ -39,9 +49,6 @@ const createUser = async (req: Request<{}, {}, CreateUserBody>, res: Response) =
   }
 };
 
-app.post("/users", createUser)
-
-// get users
 const getAllUsers = async (req: Request, res: Response) => {
   try {
     const allUsers = await prisma.user.findMany();
@@ -52,19 +59,20 @@ const getAllUsers = async (req: Request, res: Response) => {
   }
 };
 
+app.post("/users", createUser);
 app.get("/users", getAllUsers);
 
-// jobs
-const createJob = async (req: Request<{}, {}, CreateUserBody>, res: Response) => {
+// ------------------- JOB ROUTES -------------------
+const createJob = async (req: Request<{}, {}, CreateJobBody>, res: Response) => {
   try {
-    const { title, description, posterId } = req.body; // ✅ now TypeScript knows email exists
+    const { title, description, posterId } = req.body;
 
-    if (!title || !description  || !posterId ) {
+    if (!title || !description || !posterId) {
       return res.status(400).json({ error: "Please provide all values" });
     }
 
     const newJob = await prisma.jobs.create({
-      data: { title,  description, posterId},
+      data: { title, description, posterId },
     });
 
     return res.status(201).json(newJob);
@@ -74,53 +82,33 @@ const createJob = async (req: Request<{}, {}, CreateUserBody>, res: Response) =>
   }
 };
 
-app.post("/jobs", createJob)
-
-// get users
 const getAllJobs = async (req: Request, res: Response) => {
   try {
-    const alljobs = await prisma.jobs.findMany({
-        include:{
-            poster: true
-        }
+    const redisClient = await connectRedis();
+    const allJobs = await prisma.jobs.findMany({
+      include: { poster: true },
     });
-    return res.status(200).json(alljobs);
+
+    await redisClient.setEx("alljobs", 3600, JSON.stringify(allJobs));
+    return res.status(200).json(allJobs);
   } catch (error) {
-    console.error("Error fetching users:", error);
+    console.error("Error fetching jobs:", error);
     return res.status(500).json({ error: "Failed to fetch jobs" });
   }
 };
 
-app.get("/jobs", getAllJobs);
+app.post("/jobs", createJob);
+app.get("/jobs", redisCache("alljobs"), getAllJobs);
 
-// get single job
-const getuserSingleJobs = async (req: Request, res: Response) => {
+// ------------------- START SERVER -------------------
+(async () => {
   try {
-    const {id} =  req.params
-     const jobId = Number(id);
-      if (isNaN(jobId)) {
-      return res.status(400).json({ error: "Invalid job ID" });
-    }
-    const job = await prisma.jobs.findMany({
-      where: { posterId: jobId },
+    await connectRedis();
+    app.listen(4000, () => {
+      console.log("🚀 Server running on port 4000");
     });
-      if (!job) {
-      return res.status(404).json({ error: "Job not found" });
-    }
-    return res.status(200).json(job);
   } catch (error) {
-    console.error("Error fetching users:", error);
-    return res.status(500).json({ error: "Failed to fetch jobs" });
+    console.error("❌ Failed to start server:", error);
+    process.exit(1);
   }
-};
-
-app.get("/jobs/:id", getuserSingleJobs);
-
-// home
-app.get("/", (req: Request, res: Response) => {
-  res.status(200).send("Hello World!");
-});
-
-app.listen(4000, () => {
-  console.log("Server running on port 4000");
-});
+})();
